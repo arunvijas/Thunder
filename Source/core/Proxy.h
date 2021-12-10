@@ -401,7 +401,7 @@ namespace WPEFramework {
                     _refCount->AddRef();
                 }
             }
-            ProxyType(ProxyType<CONTEXT>&& move)
+            ProxyType(ProxyType<CONTEXT>&& move) noexcept
                 : _refCount(move._refCount)
                 , _realObject(move._realObject)
             {
@@ -463,7 +463,7 @@ namespace WPEFramework {
                 return(*this);
             }
 
-            ProxyType<CONTEXT>& operator=(ProxyType<CONTEXT>&& rhs)
+            ProxyType<CONTEXT>& operator=(ProxyType<CONTEXT>&& rhs) noexcept
             {
                 // If we already have one, lets remove the one we got first
                 if (_refCount != nullptr) _refCount->Release();
