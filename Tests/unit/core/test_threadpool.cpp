@@ -604,7 +604,7 @@ TEST(Core_ThreadPool, CheckThreadPool_CancelJob_WhileProcessing)
     EXPECT_EQ(static_cast<TestJob<ThreadPoolTester>&>(*job).GetStatus(), TestJob<ThreadPoolTester>::COMPLETED);
     job.Release();
 }
-void CheckThreadPool_ProcessMultipleJobs(uint8_t threadCount, uint8_t queueSize, uint8_t additionalJobs)
+void CheckThreadPool_ProcessMultipleJobs(const uint8_t threadCount, const uint8_t queueSize, const uint8_t additionalJobs)
 {
     ThreadPoolTester threadPool(threadCount, 0, queueSize);
 
@@ -732,7 +732,7 @@ TEST(Core_ThreadPool, CheckThreadPool_ProcessMultipleJobs_CancelInBetween)
     }
     jobs.clear();
 }
-void CheckThreadPool_ProcessMultipleJobs_CancelInBetween_WithMultiplePool(uint8_t threadCount, uint8_t queueSize, uint8_t additionalJobs)
+void CheckThreadPool_ProcessMultipleJobs_CancelInBetween_WithMultiplePool(const uint8_t threadCount, const uint8_t queueSize, const uint8_t additionalJobs)
 {
     ThreadPoolTester threadPool(threadCount, 0, queueSize);
     EXPECT_EQ(threadPool.Count(), threadCount);
@@ -760,7 +760,7 @@ void CheckThreadPool_ProcessMultipleJobs_CancelInBetween_WithMultiplePool(uint8_
     usleep(100);
 
     for (uint8_t i = 0; i < jobs.size(); ++i) {
-        EXPECT_EQ(threadPool.WaitForJobEvent(jobs[i], MaxJobWaitTime * 3), Core::ERROR_NONE);
+        EXPECT_EQ(threadPool.WaitForJobEvent(jobs[i], MaxJobWaitTime * 5), Core::ERROR_NONE);
         if ((i == 3) || (i == 4)) {
             threadPool.Revoke(jobs[i], 0);
         }
@@ -805,3 +805,147 @@ TEST(Core_ThreadPool, CheckThreadPool_ProcessMultipleJobs_CancelInBetween_WithMu
     CheckThreadPool_ProcessMultipleJobs_CancelInBetween_WithMultiplePool(5, 5, 5);
 }
 
+class ThreadJobTester : public EventControl {
+public:
+    ThreadJobTester(const ThreadJobTester&) = delete;
+    ThreadJobTester& operator=(const ThreadJobTester&) = delete;
+
+    ThreadJobTester()
+        : _expectedTime()
+        , _job(*this)
+    {
+    }
+    ~ThreadJobTester() = default;
+
+    Core::ProxyType<Core::IDispatch> Reset()
+    {
+        return _job.Reset();
+    }
+    Core::ProxyType<Core::IDispatch> Aquire()
+    {
+        return _job.Aquire();
+    }
+    bool IsIdle()
+    {
+        return _job.IsIdle();
+    }
+
+public:
+    void Dispatch()
+    {
+        Notify();
+    }
+
+private:
+    Core::Time _expectedTime;
+    Core::ThreadPool::JobType<ThreadJobTester&> _job;
+};
+
+
+void CheckThreadPool_JobType_Submit(const uint8_t threadCount, const uint8_t queueSize, const uint8_t additionalJobs, const uint8_t cancelJobsCount, const uint8_t* cancelJobsId)
+{
+    ThreadPoolTester threadPool(threadCount, 0, queueSize);
+    EXPECT_EQ(threadPool.Count(), threadCount);
+
+    std::vector<Core::ProxyType<ThreadJobTester>> jobs;
+    // Create Jobs with more than Queue size. i.e, queueSize + additionalJobs
+    for (uint8_t i = 0; i < queueSize + additionalJobs; ++i) {
+        jobs.push_back(Core::ProxyType<ThreadJobTester>(Core::ProxyType<ThreadJobTester>::Create()));
+    }
+
+    for (uint8_t i = 0; i < jobs.size(); ++i) {
+        bool isCanceledJob = false;
+        for (uint8_t cancelIndex = 0; cancelIndex < cancelJobsCount; cancelIndex++)
+        {
+            if (i == cancelJobsId[cancelIndex]) {
+                isCanceledJob = true;
+                break;
+            }
+        }
+        Core::ProxyType<Core::IDispatch> job;
+        if (isCanceledJob == true) {
+            EXPECT_EQ(jobs[i]->IsIdle(), true);
+            EXPECT_EQ(jobs[i]->IsIdle(), true);
+            job = (jobs[i]->Aquire());
+            job = (jobs[i]->Reset());
+
+        } else {
+            EXPECT_EQ(jobs[i]->IsIdle(), true);
+            job = (jobs[i]->Aquire());
+            EXPECT_EQ(jobs[i]->IsIdle(), false);
+        }
+        if (job.IsValid() && (jobs[i]->IsIdle() != true)) {
+            if (threadPool.Queue().IsFull() == false) {
+                threadPool.SubmitUsingSelfWorker(job);
+            } else {
+                EXPECT_EQ(threadPool.Queue().IsFull(), true);
+                threadPool.SubmitUsingExternalWorker(job, Core::infinite);
+            }
+        }
+    }
+    EXPECT_EQ(threadPool.Pending(), queueSize - cancelJobsCount);
+    EXPECT_EQ(threadPool.Queue().Length(), queueSize - cancelJobsCount);
+
+    threadPool.Run();
+    usleep(100);
+
+    for (uint8_t i = 0; i < jobs.size(); ++i) {
+        bool isCanceledJob = false;
+        for (uint8_t cancelIndex = 0; cancelIndex < cancelJobsCount; cancelIndex++)
+        {
+            if (i == cancelJobsId[cancelIndex]) {
+                isCanceledJob = true;
+                break;
+            }
+        }
+        if (isCanceledJob == true) {
+            EXPECT_EQ(jobs[i]->WaitForEvent(MaxJobWaitTime * 3), Core::ERROR_TIMEDOUT);
+        } else {
+            EXPECT_EQ(jobs[i]->WaitForEvent(MaxJobWaitTime * 3), Core::ERROR_NONE);
+        }
+        EXPECT_EQ(jobs[i]->IsIdle(), true);
+    }
+
+    uint8_t totalRuns = 0;
+    uint32_t counters[threadCount] = {0};
+    threadPool.Runs(threadCount, counters);
+    for (uint8_t i = 0; i < threadCount; ++i) {
+        totalRuns += counters[i];
+    }
+
+    EXPECT_EQ(totalRuns, queueSize + additionalJobs - cancelJobsCount);
+    threadPool.Stop();
+
+    for (auto& job: jobs) {
+        job.Release();
+    }
+    jobs.clear();
+}
+
+TEST(Core_ThreadPool, Check_ThreadPool_JobType_Submit_SinglePool_SingleJob)
+{
+    CheckThreadPool_JobType_Submit(1, 1, 0, 0, nullptr);
+}
+TEST(Core_ThreadPool, Check_ThreadPool_JobType_Submit_SinglePool_SingleJob_CancelJobs)
+{
+    const uint8_t job = 0;
+    CheckThreadPool_JobType_Submit(1, 1, 0, 1, &job);
+}
+TEST(Core_ThreadPool, Check_ThreadPool_JobType_Submit_SinglePool_MultipleJobs)
+{
+    CheckThreadPool_JobType_Submit(1, 5, 0, 0, nullptr);
+}
+TEST(Core_ThreadPool, Check_ThreadPool_JobType_Submit_SinglePool_MultipleJobs_CancelJobs)
+{
+    const uint8_t jobs[] = {0, 2};
+    CheckThreadPool_JobType_Submit(1, 5, 0, sizeof(jobs), jobs);
+}
+TEST(Core_ThreadPool, Check_ThreadPool_JobType_Submit_MultiplePool_MultipleJobs)
+{
+    CheckThreadPool_JobType_Submit(5, 5, 0, 0, nullptr);
+}
+TEST(Core_ThreadPool, Check_ThreadPool_JobType_Submit_MultiplePool_MultipleJobs_CancelJobs)
+{
+    const uint8_t jobs[] = {0, 2};
+    CheckThreadPool_JobType_Submit(5, 5, 0, sizeof(jobs), jobs);
+}
