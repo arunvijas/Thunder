@@ -125,13 +125,18 @@ namespace RPC {
     void Administrator::Invoke(Core::ProxyType<Core::IPCChannel>& channel, Core::ProxyType<InvokeMessage>& message)
     {
         uint32_t interfaceId(message->Parameters().InterfaceId());
+        void* impl;
 
         // stub are loaded before any action is taken and destructed if the process closes down, so no need to lock..
         std::map<uint32_t, ProxyStub::UnknownStub*>::iterator index(_stubs.find(interfaceId));
+        Core::IUnknown* implementation(index->second->Convert(impl));
 
-        if (index != _stubs.end()) {
+        ASSERT(implementation != nullptr);
+
+        if (index != _stubs.end() && implementation != nullptr) {
             uint32_t methodId(message->Parameters().MethodId());
             index->second->Handle(methodId, channel, message);
+            implementation->Release();
         } else {
             // Oops this is an unknown interface, Do not think this could happen.
             TRACE_L1("Unknown interface. %d", interfaceId);
